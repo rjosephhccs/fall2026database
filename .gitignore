@@ -1,0 +1,41 @@
+# Private exports, local databases, and generated reports may contain real data.
+.private/
+.runtime/
+exports/
+backups/
+reports/
+*.dump
+*.backup
+*.bak
+*.tar
+*.gz
+*.zip
+*.csv
+*.tsv
+
+# Local connection details and credentials. Commit only reviewed examples.
+.env
+.env.*
+!.env.example
+.pgpass
+pgpass.conf
+.pg_service.conf
+pg_service.conf
+connection.json
+connection-details.txt
+servers.json
+pgadmin4.db
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local tooling and operating-system files.
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+*.log
+*.tmp
+*.swp
