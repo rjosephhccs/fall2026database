@@ -48,6 +48,7 @@ DECLARE
     expected_app boolean;
     expected_admin boolean;
     role_name text;
+    user_column record;
 BEGIN
     FOREACH role_name IN ARRAY ARRAY['inventory_owner','inventory_admin','inventory_app','inventory_java'] LOOP
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name
@@ -83,11 +84,27 @@ BEGIN
         OR NOT has_table_privilege('inventory_java','public.users','UPDATE')
         OR has_table_privilege('inventory_java','public.users','DELETE')
         OR has_table_privilege('inventory_app','public.users','SELECT')
+        OR has_table_privilege('inventory_app','public.users','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
         OR has_table_privilege('inventory_app','public.products','UPDATE')
         OR has_table_privilege('inventory_app','public.orders','INSERT')
         OR has_table_privilege('inventory_app','public.order_items','UPDATE')
         OR has_table_privilege('inventory_java','public.products','SELECT') THEN
         RAISE EXCEPTION 'Unexpected service table privileges';
+    END IF;
+    FOR user_column IN
+        SELECT attname, attnum FROM pg_attribute
+        WHERE attrelid = 'public.users'::regclass AND attnum > 0 AND NOT attisdropped
+    LOOP
+        IF has_column_privilege('inventory_app', 'public.users', user_column.attnum, 'SELECT')
+            IS DISTINCT FROM (user_column.attname = ANY(ARRAY['user_id','username','role','is_active']))
+            OR has_column_privilege('inventory_app', 'public.users', user_column.attnum,
+                'SELECT WITH GRANT OPTION,INSERT,UPDATE,REFERENCES') THEN
+            RAISE EXCEPTION 'Unexpected Python privilege on users.%', user_column.attname;
+        END IF;
+    END LOOP;
+    IF (SELECT array_agg(version ORDER BY version) FROM inventory_meta.schema_migrations)
+        IS DISTINCT FROM ARRAY['V001','V002','V003'] THEN
+        RAISE EXCEPTION 'Expected V001, V002, and V003 in the migration ledger';
     END IF;
     IF has_schema_privilege('inventory_app','public','CREATE')
         OR has_schema_privilege('inventory_java','public','CREATE') THEN
@@ -105,6 +122,18 @@ RETURNING user_id AS test_user_id \gset
 RESET ROLE;
 
 SET LOCAL ROLE inventory_app;
+-- Read a real fixture, including an allowed-column predicate and ordering.
+DO $$
+DECLARE visible_user record;
+BEGIN
+    SELECT user_id, username, role, is_active INTO STRICT visible_user
+    FROM public.users WHERE username = 'inew_smoke_fictional_user' ORDER BY user_id;
+    IF visible_user.user_id IS NULL OR visible_user.username <> 'inew_smoke_fictional_user'
+        OR visible_user.role <> 'PRODUCT_MANAGER' OR visible_user.is_active IS DISTINCT FROM true THEN
+        RAISE EXCEPTION 'Python user lookup returned incorrect values';
+    END IF;
+END;
+$$;
 SELECT public.create_product('Fictional smoke product','INEW-SMOKE-001','Disposable fixture',12.50,2)
     AS test_product_id \gset
 SELECT public.record_stock_transaction(:test_product_id,'IN',10,'Fictional opening stock')
@@ -144,11 +173,36 @@ $$;
 -- Exercise privilege denial as the actual service role, not only catalog flags.
 SET LOCAL ROLE inventory_app;
 DO $$
-DECLARE rejected boolean;
+DECLARE
+    rejected boolean;
+    forbidden_column text;
 BEGIN
+    FOREACH forbidden_column IN ARRAY ARRAY['password_hash','first_name','last_name','email','created_at','updated_at'] LOOP
+        rejected := false;
+        BEGIN EXECUTE format('SELECT %I FROM public.users', forbidden_column);
+        EXCEPTION WHEN insufficient_privilege THEN rejected := true; END;
+        IF NOT rejected THEN RAISE EXCEPTION 'Inventory service could read users.%', forbidden_column; END IF;
+    END LOOP;
     rejected := false;
-    BEGIN PERFORM password_hash FROM public.users; EXCEPTION WHEN insufficient_privilege THEN rejected := true; END;
-    IF NOT rejected THEN RAISE EXCEPTION 'Inventory service could read password hashes'; END IF;
+    BEGIN PERFORM * FROM public.users; EXCEPTION WHEN insufficient_privilege THEN rejected := true; END;
+    IF NOT rejected THEN RAISE EXCEPTION 'Inventory service could SELECT * from users'; END IF;
+    rejected := false;
+    BEGIN PERFORM user_id FROM public.users WHERE password_hash IS NOT NULL;
+    EXCEPTION WHEN insufficient_privilege THEN rejected := true; END;
+    IF NOT rejected THEN RAISE EXCEPTION 'Inventory service could inspect password hashes in a predicate'; END IF;
+    rejected := false;
+    BEGIN INSERT INTO public.users (username, password_hash, role)
+        VALUES ('inew_smoke_denied_user', '!DISABLED-TEST-ONLY!', 'PRODUCT_MANAGER');
+    EXCEPTION WHEN insufficient_privilege THEN rejected := true; END;
+    IF NOT rejected THEN RAISE EXCEPTION 'Inventory service could insert users'; END IF;
+    rejected := false;
+    BEGIN UPDATE public.users SET is_active = false WHERE username = 'inew_smoke_fictional_user';
+    EXCEPTION WHEN insufficient_privilege THEN rejected := true; END;
+    IF NOT rejected THEN RAISE EXCEPTION 'Inventory service could update users'; END IF;
+    rejected := false;
+    BEGIN DELETE FROM public.users WHERE username = 'inew_smoke_denied_user';
+    EXCEPTION WHEN insufficient_privilege THEN rejected := true; END;
+    IF NOT rejected THEN RAISE EXCEPTION 'Inventory service could delete users'; END IF;
     rejected := false;
     BEGIN UPDATE public.products SET quantity = 99 WHERE sku = 'INEW-SMOKE-001';
     EXCEPTION WHEN insufficient_privilege THEN rejected := true; END;
@@ -228,4 +282,4 @@ $$;
 RESET ROLE;
 
 ROLLBACK;
-\echo 'PASS: schema objects, owner/role privileges, pending/completed orders, receipts, history protection, failed completion rollback, and temporary-table shadowing.'
+\echo 'PASS: schema objects, V003 column-only user reads and denied password/hash/writes, owner/role privileges, orders, receipts, history protection, rollback, and temporary-table shadowing.'

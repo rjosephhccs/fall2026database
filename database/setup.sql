@@ -24,6 +24,7 @@ $guard$;
 \ir migrations/V001__live_schema_baseline.sql
 \ir security/02_permissions.sql
 \ir migrations/V002__trusted_function_resolution.sql
+\ir migrations/V003__inventory_app_user_read.sql
 CREATE SCHEMA inventory_meta AUTHORIZATION inventory_owner;
 CREATE TABLE inventory_meta.schema_migrations (
     version text PRIMARY KEY,
@@ -33,5 +34,6 @@ CREATE TABLE inventory_meta.schema_migrations (
 ALTER TABLE inventory_meta.schema_migrations OWNER TO inventory_owner;
 INSERT INTO inventory_meta.schema_migrations (version, description) VALUES
     ('V001', 'Live schema baseline, captured 2026-10-27; portable owner and separate ACLs'),
-    ('V002', 'Trusted function resolution and schema-qualified stock relations');
+    ('V002', 'Trusted function resolution and schema-qualified stock relations'),
+    ('V003', 'Column-limited user reads for the Python inventory service');
 COMMIT;

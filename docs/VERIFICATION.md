@@ -16,7 +16,7 @@ All six business tables were empty in the fresh restore before testing. No sourc
 
 V001 retains the exported business definitions. Local `postgres` ownership is mapped to `inventory_owner`; access grants/revokes are separated into the permissions template. Dump-specific TOC identifiers, export timestamps, and psql restrict-key wrappers are removed from the reviewed version. None of these are application records or credentials.
 
-The owner is a non-login, non-superuser role. Role creation is a credential-free template, not a dump of live cluster roles. The permissions template also revokes PUBLIC CREATE on schema `public`. V002 schema-qualifies stock tables and explicitly puts `pg_temp` last in trusted function search paths. These changes apply only to a new repository installation; the existing Mac database was read and exported, not migrated.
+The owner is a non-login, non-superuser role. Role creation is a credential-free template, not a dump of live cluster roles. The permissions template also revokes PUBLIC CREATE on schema `public`. V002 schema-qualifies stock tables and explicitly puts `pg_temp` last in trusted function search paths. V003 adds column-limited user reads for Python through a new migration; published V001/V002 and the original security templates remain unchanged. The existing Mac database was read and exported, not migrated.
 
 ## Checks passed
 
@@ -33,6 +33,22 @@ The owner is a non-login, non-superuser role. Role creation is a credential-free
 - Publication scan of the final public text files.
 
 The smoke fixtures are fictional and rolled back; the disposable cluster is then removed. PostgreSQL sequence increments are not transactional, so tests intentionally refuse non-test database names.
+
+## V003 verification — November 11, 2026
+
+`PG_BIN=/Library/PostgreSQL/18/bin bash scripts/verify.sh` passed on PostgreSQL 18.6 using a disposable cluster in a private temporary directory, a private Unix socket, and no TCP listener. The verifier explicitly clears `PGHOSTADDR` so an inherited address cannot override that socket. No connection or migration was made to the live Mac database.
+
+- Fresh setup applies V001, V002, and V003 and records exactly those ledger versions.
+- A separate populated V002 installation upgrades through `database/upgrade_to_v003.sql`, preserving its fictional user row and both existing migration-ledger entries.
+- As `inventory_app`, a real query returns `user_id`, `username`, `role`, and `is_active`, including filtering and ordering by approved fields.
+- Effective privileges allow SELECT on exactly those four columns, without whole-table SELECT, grant options, or user writes. Java retains its SELECT/INSERT/UPDATE access.
+- Actual role queries reject `password_hash`, every other unapproved user column, `SELECT *`, and a password-hash predicate. Direct user INSERT/UPDATE/DELETE also fail with insufficient privilege.
+- V003 rejects table-wide SELECT, direct password-hash grants, PUBLIC table/extra-column grants, inherited Java membership, membership permitting SET ROLE without inheritance, and delegable SELECT. Deliberate drift fixtures roll back.
+- Repeating the grant migration succeeds; repeating the versioned upgrade wrapper fails. Repeating fresh setup still refuses to overwrite an existing database.
+- Existing inventory, order, history, rollback, and temporary-table-shadowing checks pass after fresh setup and upgrade.
+- Shell syntax, whitespace checks, and the public-file publication scan pass.
+
+The upgrade fixture is committed only inside the disposable test database to model existing records; the entire temporary cluster is removed after verification. The automated suite tests role privileges, not external Python/Java service connections or login credentials.
 
 ## Limits of verification
 

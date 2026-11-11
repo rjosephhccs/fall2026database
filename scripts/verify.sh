@@ -20,7 +20,7 @@ trap cleanup EXIT
 "$pg_bin/pg_ctl" -D "$test_dir/data" -l "$test_dir/server.log" -o "-h '' -k '$test_dir' -p 55439 -c unix_socket_permissions=0700" -w start >/dev/null
 started=1
 export PGHOST="$test_dir" PGPORT=55439 PGUSER=inventory_test_admin
-unset PGPASSWORD PGPASSFILE PGSERVICE PGOPTIONS PGDATABASE
+unset PGHOSTADDR PGPASSWORD PGPASSFILE PGSERVICE PGOPTIONS PGDATABASE
 "$pg_bin/createdb" inventory_test_restore
 "$pg_bin/psql" -X -v ON_ERROR_STOP=1 -d inventory_test_restore -f "$repo_dir/database/setup.sql" >"$test_dir/restore.log" 2>&1 || { cat "$test_dir/restore.log"; exit 1; }
 "$pg_bin/psql" -X -v ON_ERROR_STOP=1 -d inventory_test_restore -f "$repo_dir/tests/smoke.sql"
@@ -33,4 +33,44 @@ if ! grep -q 'Database is not empty' "$test_dir/repeat.log"; then
   cat "$test_dir/repeat.log"
   exit 1
 fi
-echo 'PASS: clean restore, smoke checks, and repeat-setup refusal; live database untouched.'
+
+# Test the supported forward path from the unchanged published V002 files.
+"$pg_bin/createdb" inventory_test_upgrade
+"$pg_bin/psql" -X -v ON_ERROR_STOP=1 -d inventory_test_upgrade -f "$repo_dir/tests/upgrade_v003.sql" >"$test_dir/upgrade.log" 2>&1 || { cat "$test_dir/upgrade.log"; exit 1; }
+cat "$test_dir/upgrade.log"
+# The grant migration itself is idempotent; the ledger wrapper must reject reapplication.
+"$pg_bin/psql" -X -v ON_ERROR_STOP=1 --single-transaction -d inventory_test_upgrade -f "$repo_dir/database/migrations/V003__inventory_app_user_read.sql"
+if "$pg_bin/psql" -X -v ON_ERROR_STOP=1 -d inventory_test_upgrade -f "$repo_dir/database/upgrade_to_v003.sql" >"$test_dir/repeat-upgrade.log" 2>&1; then
+  echo 'FAIL: repeated V003 upgrade unexpectedly succeeded.' >&2
+  exit 1
+fi
+if ! grep -q 'V003' "$test_dir/repeat-upgrade.log"; then
+  cat "$test_dir/repeat-upgrade.log"
+  exit 1
+fi
+
+# Unexpected direct, PUBLIC, or inherited access must be rejected, never hidden
+# by a narrower column grant. Each deliberately unsafe change rolls back.
+expect_rejected_v003() {
+  local label=$1 change=$2
+  if "$pg_bin/psql" -X -v ON_ERROR_STOP=1 --single-transaction -d inventory_test_upgrade \
+      -c "$change" -f "$repo_dir/database/migrations/V003__inventory_app_user_read.sql" \
+      >"$test_dir/drift.log" 2>&1; then
+    echo "FAIL: V003 accepted $label." >&2
+    exit 1
+  fi
+  if ! grep -Eq 'V003 (found broader users privileges|requires a restricted inventory_app role)' "$test_dir/drift.log"; then
+    cat "$test_dir/drift.log"
+    exit 1
+  fi
+  echo "PASS: V003 rejects $label."
+}
+expect_rejected_v003 'table-wide SELECT' 'GRANT SELECT ON public.users TO inventory_app'
+expect_rejected_v003 'password-hash column SELECT' 'GRANT SELECT (password_hash) ON public.users TO inventory_app'
+expect_rejected_v003 'PUBLIC table SELECT' 'GRANT SELECT ON public.users TO PUBLIC'
+expect_rejected_v003 'PUBLIC extra-column SELECT' 'GRANT SELECT (email) ON public.users TO PUBLIC'
+expect_rejected_v003 'inherited Java membership' 'GRANT inventory_java TO inventory_app'
+expect_rejected_v003 'SET ROLE membership without inheritance' 'GRANT inventory_java TO inventory_app WITH INHERIT FALSE'
+expect_rejected_v003 'delegable SELECT' 'GRANT SELECT (username) ON public.users TO inventory_app WITH GRANT OPTION'
+"$pg_bin/psql" -X -v ON_ERROR_STOP=1 -d inventory_test_upgrade -f "$repo_dir/tests/smoke.sql"
+echo 'PASS: fresh setup, populated V002 upgrade, column-only access, repeat guards, and smoke checks; live database untouched.'

@@ -2,7 +2,7 @@
 
 This reference describes the actual `inventory_management_system` schema exported from the Mac on October 27, 2026 using PostgreSQL 18.6. All application objects are in `public`: **6 tables, 6 identity sequences, 6 views, 11 functions, and 4 triggers**. The export contains definitions and permissions, with no table records. It supersedes the separate four-table `inventory`-schema starter as the source for this repository.
 
-The baseline preserves the exported business behavior and maps object ownership from `postgres` to the non-login `inventory_owner`. Original grants and revokes are recorded separately. V002 hardens function search paths and qualifies stock-operation table names. The permissions template prevents public creation of objects in `public`. None of this changes the working database on the Mac.
+The baseline preserves the exported business behavior and maps object ownership from `postgres` to the non-login `inventory_owner`. Original grants and revokes are recorded separately. V002 hardens function search paths and qualifies stock-operation table names. V003 adds four-column user reads for Python. The permissions template prevents public creation of objects in `public`. Publishing these files does not change the working database on the Mac.
 
 ## Data dictionary
 
@@ -149,10 +149,10 @@ All are row-level triggers. These four supporting functions return `trigger` and
 
 Database roles are distinct from employee role strings stored in `users.role`. The export records object grants but does not establish cluster-role attributes, passwords, memberships, or database-level connection policy.
 
-| Database role | Exported object permissions | Intended integration |
+| Database role | Repository permissions after V003 | Intended integration |
 |---|---|---|
 | `inventory_java` | Select/insert/update `users`; sequence select/usage on all six identity sequences | Java authentication and employee administration. Keep password hashes inside the authentication service. No user-delete grant is exported. |
-| `inventory_app` | Select on five non-user tables and all six views; execute all seven application functions | Python inventory queries, stock changes, order flow, and reports. No direct table writes or user-table read grant is exported. |
+| `inventory_app` | Select on five non-user tables and all six views; execute all seven application functions; V003 adds SELECT on `users(user_id, username, role, is_active)` only | Python inventory queries, stock changes, order flow, reports, and user lookup. No direct user writes or access to `password_hash` or other user columns; queries must list the four fields instead of `SELECT *`. |
 | `inventory_admin` | Select/insert/update/delete products, suppliers, and inventory transactions; select all six views; execute stock recording and order completion; sequence access for products/suppliers/transactions | Controlled administration. It is not the normal shared service account. History triggers still reject ordinary history update/delete. |
 | `inventory_owner` | Owns published objects; non-login role | Migration ownership, replacing the raw export's `postgres` object owner. |
 
